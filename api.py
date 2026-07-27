@@ -4,13 +4,13 @@ import hashlib
 import urllib.parse
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 import httpx
 
 app = FastAPI(
     title="MovieBox Direct API",
-    description="Direct scraper & Ultra-Stable Proxy Engine for MovieBox",
-    version="3.1.0"
+    description="Direct scraper & Heroku-Compatible Ultra Proxy Engine",
+    version="3.2.0"
 )
 
 app.add_middleware(
@@ -167,8 +167,10 @@ async def get_details(
     if not path:
         raise HTTPException(status_code=400, detail="Provide 'url' or 'detail_path'")
 
-    # Base Domain Auto-Detection (e.g. https://api.mydomain.com/)
-    base_domain = str(request.base_url).rstrip("/")
+    # Base Domain Detection (Handles Heroku SSL Forwarding properly)
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    base_domain = f"{scheme}://{host}".rstrip("/")
 
     detail_url = f"{H5_API_BASE}/detail?detailPath={path}"
 
@@ -210,8 +212,8 @@ async def get_details(
                     size_str = format_size(s.get("size", 0))
                     original_url = s.get("url", "")
                     if original_url:
-                        # Full Domain Level Proxy Link
-                        proxy_link = f"{base_domain}/api/download-proxy?url={urllib.parse.quote(original_url)}&filename={urllib.parse.quote(title)}_{res}p.mp4"
+                        clean_filename = f"{title}_{res}p.mp4".replace(" ", "_")
+                        proxy_link = f"{base_domain}/api/download-proxy?url={urllib.parse.quote(original_url, safe='')}&filename={urllib.parse.quote(clean_filename)}"
                         
                         downloads.append({
                             "title": f"Direct Download {res}p{title_suffix}",
@@ -226,7 +228,8 @@ async def get_details(
                     original_sub_url = sub.get("url")
                     sub_size = format_size(sub.get("size", 0))
                     if original_sub_url:
-                        proxy_sub_link = f"{base_domain}/api/download-proxy?url={urllib.parse.quote(original_sub_url)}&filename={urllib.parse.quote(title)}_{sub_lang}.srt"
+                        clean_sub_file = f"{title}_{sub_lang}.srt".replace(" ", "_")
+                        proxy_sub_link = f"{base_domain}/api/download-proxy?url={urllib.parse.quote(original_sub_url, safe='')}&filename={urllib.parse.quote(clean_sub_file)}"
                         downloads.append({
                             "title": f"Subtitle - {sub_lang}{title_suffix}",
                             "url": proxy_sub_link,
@@ -238,7 +241,8 @@ async def get_details(
             if not downloads:
                 trailer_url = subject.get("trailer", {}).get("videoAddress", {}).get("url", "")
                 if trailer_url:
-                    proxy_trailer = f"{base_domain}/api/download-proxy?url={urllib.parse.quote(trailer_url)}&filename={urllib.parse.quote(title)}_Trailer.mp4"
+                    clean_trailer_file = f"{title}_Trailer.mp4".replace(" ", "_")
+                    proxy_trailer = f"{base_domain}/api/download-proxy?url={urllib.parse.quote(trailer_url, safe='')}&filename={urllib.parse.quote(clean_trailer_file)}"
                     downloads.append({
                         "title": "Trailer (MP4)",
                         "url": proxy_trailer,
@@ -282,41 +286,55 @@ async def get_details(
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+# ⚡ HEROKU SAFE FAST STREAMING PROXY ENGINE
 @app.get("/api/download-proxy")
 async def download_proxy(request: Request, url: str = Query(...), filename: str = Query("video.mp4")):
-    """Bypasses 403 Forbidden errors by adding proper MovieBox CDN headers & handles fast chunk streaming."""
+    """Fixed proxy engine for Heroku to prevent ERR_INVALID_RESPONSE and 30s timeouts."""
+    
+    target_url = urllib.parse.unquote(url)
     
     proxy_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": "https://videodownloader.site/",
         "Origin": "https://videodownloader.site",
         "Accept": "*/*",
-        "Accept-Encoding": "identity",
-        "Connection": "keep-alive"
+        "Accept-Encoding": "identity"
     }
 
     range_header = request.headers.get("range")
     if range_header:
         proxy_headers["Range"] = range_header
 
-    client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=120.0)
+    # Fast client with 15s connect timeout to prevent Heroku H12 Timeout
+    client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=httpx.Timeout(15.0, read=60.0))
 
     try:
-        req = client.build_request("GET", url, headers=proxy_headers)
+        req = client.build_request("GET", target_url, headers=proxy_headers)
         res = await client.send(req, stream=True)
+
+        if res.status_code not in [200, 206]:
+            await res.aclose()
+            await client.aclose()
+            # Direct redirect fallback if CDN refuses
+            return RedirectResponse(url=target_url, status_code=307)
 
         async def stream_chunks():
             try:
-                async for chunk in res.aiter_bytes(chunk_size=131072):
+                # 64KB chunks for optimal memory & instant flushing
+                async for chunk in res.aiter_bytes(chunk_size=65536):
                     yield chunk
             finally:
                 await res.aclose()
                 await client.aclose()
 
+        # RFC 5987 Compliant Filename Header (Fixes ERR_INVALID_RESPONSE)
+        safe_filename = urllib.parse.quote(filename)
+        content_disposition = f"attachment; filename=\"{filename}\"; filename*=UTF-8''{safe_filename}"
+
         response_headers = {
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": content_disposition,
             "Content-Type": res.headers.get("content-type", "video/mp4"),
-            "Accept-Ranges": "bytes",
+            "Accept-Ranges": "bytes"
         }
 
         for h in ["content-length", "content-range"]:
@@ -329,10 +347,11 @@ async def download_proxy(request: Request, url: str = Query(...), filename: str 
             headers=response_headers
         )
 
-    except Exception as e:
+    except Exception:
         await client.aclose()
-        raise HTTPException(status_code=500, detail=f"Proxy Streaming Failed: {str(e)}")
+        # Fallback to direct redirect on Heroku connection drops
+        return RedirectResponse(url=target_url, status_code=307)
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MovieBox Official API", "version": "3.1.0"}
+    return {"status": "ok", "service": "MovieBox Official API", "version": "3.2.0"}
