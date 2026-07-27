@@ -2,20 +2,23 @@ import time
 import json
 import hashlib
 import urllib.parse
+import asyncio
+import random
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
+from datetime import datetime
 import httpx
 
 app = FastAPI(
     title="MovieBox Direct API",
     description="Direct scraper & Heroku-Compatible Ultra Proxy Engine",
-    version="3.2.0"
+    version="3.2.1"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Production එකේදී මේක change කරන්න
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,25 +28,56 @@ BASE_URL = "https://themoviebox.xyz"
 H5_API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
 _bearer_token: str | None = None
+_token_expiry: float = 0
 
+# 🆕 වැඩි දියුණු කළ Headers
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Origin": "https://h5.aoneroom.com",
     "Referer": "https://h5.aoneroom.com/",
     "Content-Type": "application/json",
     "X-Request-Lang": "en",
-    "X-Client-Info": '{"timezone":"Asia/Colombo"}'
-}
-
-PLAYER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json",
+    "X-Client-Info": '{"timezone":"Asia/Colombo"}',
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "X-Client-Info": '{"timezone":"Asia/Colombo"}',
-    "X-Source": ""
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Connection": "keep-alive"
 }
+
+# 🆕 Video Download සඳහා වැඩි දියුණු කළ Headers
+PLAYER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "video/mp4,video/webm,video/*;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://themoviebox.xyz/",
+    "Origin": "https://themoviebox.xyz",
+    "Sec-Fetch-Dest": "video",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "cross-site",
+    "Connection": "keep-alive",
+    "X-Client-Info": '{"timezone":"Asia/Colombo"}',
+    "X-Source": "moviebox",
+    "X-Requested-With": "XMLHttpRequest"
+}
+
+# 🆕 User-Agent list එක (rotate කරන්න)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+]
 
 def get_client_token() -> str:
     timestamp = str(int(time.time()))
@@ -60,22 +94,28 @@ def get_headers(referer: str = "https://h5.aoneroom.com/") -> dict:
     return headers
 
 async def _get_bearer_token() -> str:
-    global _bearer_token
-    if _bearer_token:
+    global _bearer_token, _token_expiry
+    
+    # Token එක valid නම් return කරන්න
+    if _bearer_token and time.time() < _token_expiry:
         return _bearer_token
+    
     async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=25) as client:
         try:
             resp = await client.get(f"{H5_API_BASE}/home?host=moviebox.ph", headers=get_headers())
             x_user = resp.headers.get("x-user")
             if x_user:
                 _bearer_token = json.loads(x_user).get("token")
+                _token_expiry = time.time() + 3600  # පැය 1ක් valid
             if not _bearer_token:
                 cookie = resp.headers.get("set-cookie", "")
                 import re as _re
                 m = _re.search(r"token=([^;]+)", cookie)
                 if m:
                     _bearer_token = m.group(1)
-        except Exception:
+                    _token_expiry = time.time() + 3600
+        except Exception as e:
+            print(f"Bearer token error: {e}")
             pass
     return _bearer_token or ""
 
@@ -96,10 +136,30 @@ def format_size(size_bytes: int) -> str:
 async def root():
     return """
     <html>
-        <head><title>MovieBox Direct API</title></head>
-        <body style="font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding-top:50px;">
-            <h1 style="color:#e50914;">🎬 MovieBox Direct API is Running!</h1>
-            <p>Go to <a href="/docs" style="color:#00d2ff;">/docs</a> to test endpoints.</p>
+        <head>
+            <title>MovieBox Direct API</title>
+            <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #fff; text-align: center; padding-top: 50px; }
+                h1 { color: #e50914; }
+                a { color: #00d2ff; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+                .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+                .status { background: #1e1e1e; padding: 20px; border-radius: 10px; margin-top: 20px; }
+                .endpoint { background: #2a2a2a; padding: 10px; border-radius: 5px; margin: 10px 0; font-family: monospace; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🎬 MovieBox Direct API</h1>
+                <p>Version 3.2.1 - Enhanced Proxy Engine</p>
+                <div class="status">
+                    <h3>📡 API Status: Online</h3>
+                    <p>Go to <a href="/docs">/docs</a> to test endpoints</p>
+                    <div class="endpoint">GET /search?q=movie_name</div>
+                    <div class="endpoint">GET /api/details?detail_path=movie-id</div>
+                    <div class="endpoint">GET /api/download-proxy?url=video_url</div>
+                </div>
+            </div>
         </body>
     </html>
     """
@@ -167,7 +227,7 @@ async def get_details(
     if not path:
         raise HTTPException(status_code=400, detail="Provide 'url' or 'detail_path'")
 
-    # Base Domain Detection (Handles Heroku SSL Forwarding properly)
+    # Base Domain Detection
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("x-forwarded-host", request.url.netloc)
     base_domain = f"{scheme}://{host}".rstrip("/")
@@ -198,7 +258,12 @@ async def get_details(
             req_ep = ep if subject_type == 2 else 0
 
             download_url = f"{H5_API_BASE}/subject/download?subjectId={subject_id}&se={req_se}&ep={req_ep}&detailPath={path}"
-            r_play = await client.get(download_url, headers=get_headers("https://videodownloader.site/"))
+            
+            # 🆕 Better headers for download request
+            dl_headers = get_headers("https://videodownloader.site/")
+            dl_headers["User-Agent"] = random.choice(USER_AGENTS)
+            
+            r_play = await client.get(download_url, headers=dl_headers)
 
             downloads = []
             if r_play.status_code == 200:
@@ -220,7 +285,8 @@ async def get_details(
                             "url": proxy_link,
                             "original_url": original_url,
                             "size": size_str,
-                            "quality": f"{res}p"
+                            "quality": f"{res}p",
+                            "note": "⚠️ If download fails, copy 'original_url' and paste in browser"
                         })
 
                 for sub in captions:
@@ -286,72 +352,201 @@ async def get_details(
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-# ⚡ HEROKU SAFE FAST STREAMING PROXY ENGINE
+# ⚡ HEROKU SAFE FAST STREAMING PROXY ENGINE - වැඩි දියුණු කළ version
 @app.get("/api/download-proxy")
 async def download_proxy(request: Request, url: str = Query(...), filename: str = Query("video.mp4")):
-    """Fixed proxy engine for Heroku to prevent ERR_INVALID_RESPONSE and 30s timeouts."""
+    """Enhanced proxy engine with retry logic and rate limit handling"""
     
     target_url = urllib.parse.unquote(url)
     
+    # 🆕 Random User-Agent එකක් තෝරන්න
+    user_agent = random.choice(USER_AGENTS)
+    
+    # 🆕 Headers වැඩි දියුණු කරන්න
     proxy_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://videodownloader.site/",
-        "Origin": "https://videodownloader.site",
-        "Accept": "*/*",
-        "Accept-Encoding": "identity"
+        "User-Agent": user_agent,
+        "Referer": "https://themoviebox.xyz/",
+        "Origin": "https://themoviebox.xyz",
+        "Accept": "video/mp4,video/webm,video/*;q=0.9,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+        "X-Requested-With": "XMLHttpRequest"
     }
 
     range_header = request.headers.get("range")
     if range_header:
         proxy_headers["Range"] = range_header
 
-    # Fast client with 15s connect timeout to prevent Heroku H12 Timeout
-    client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=httpx.Timeout(15.0, read=60.0))
+    # 🆕 Retry logic එක - 3 attempts
+    max_retries = 3
+    retry_delays = [2, 4, 8]  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=httpx.Timeout(20.0, read=120.0)) as client:
+                req = client.build_request("GET", target_url, headers=proxy_headers)
+                res = await client.send(req, stream=True)
+                
+                # 🆕 Rate limit එකට හසුවුනොත්
+                if res.status_code == 429:
+                    await res.aclose()
+                    if attempt < max_retries - 1:
+                        delay = retry_delays[attempt]
+                        await asyncio.sleep(delay)
+                        # 🆕 User-Agent වෙනස් කරලා try කරන්න
+                        proxy_headers["User-Agent"] = random.choice(USER_AGENTS)
+                        continue
+                    else:
+                        # 🆕 Last attempt - Direct redirect කරන්න
+                        return RedirectResponse(url=target_url, status_code=307)
+                
+                # 🆕 403 Forbidden ආවොත්
+                if res.status_code == 403:
+                    await res.aclose()
+                    if attempt < max_retries - 1:
+                        # Headers වෙනස් කරලා try කරන්න
+                        proxy_headers["Referer"] = "https://www.google.com/"
+                        proxy_headers["User-Agent"] = random.choice(USER_AGENTS)
+                        await asyncio.sleep(retry_delays[attempt])
+                        continue
+                    else:
+                        return RedirectResponse(url=target_url, status_code=307)
+                
+                # 🆕 Success
+                if res.status_code in [200, 206]:
+                    async def stream_chunks():
+                        try:
+                            async for chunk in res.aiter_bytes(chunk_size=65536):
+                                yield chunk
+                        finally:
+                            await res.aclose()
+                    
+                    # 🆕 RFC 5987 Compliant Filename Header
+                    safe_filename = urllib.parse.quote(filename)
+                    content_disposition = f"attachment; filename=\"{filename}\"; filename*=UTF-8''{safe_filename}"
+                    
+                    response_headers = {
+                        "Content-Disposition": content_disposition,
+                        "Content-Type": res.headers.get("content-type", "video/mp4"),
+                        "Accept-Ranges": "bytes",
+                        "Cache-Control": "public, max-age=3600",
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Expose-Headers": "Content-Disposition, Content-Length, Content-Range"
+                    }
+                    
+                    # 🆕 Content-Length එක add කරන්න (download progress සඳහා)
+                    for h in ["content-length", "content-range"]:
+                        if h in res.headers:
+                            response_headers[h] = res.headers[h]
+                    
+                    return StreamingResponse(
+                        stream_chunks(),
+                        status_code=res.status_code,
+                        headers=response_headers
+                    )
+                else:
+                    # 🆕 අනෙකුත් status codes
+                    await res.aclose()
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delays[attempt])
+                        continue
+                    else:
+                        return RedirectResponse(url=target_url, status_code=307)
+                    
+        except httpx.TimeoutException:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delays[attempt])
+                continue
+            else:
+                return RedirectResponse(url=target_url, status_code=307)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                return RedirectResponse(url=target_url, status_code=307)
+            await asyncio.sleep(retry_delays[attempt])
+    
+    # Fallback
+    return RedirectResponse(url=target_url, status_code=307)
 
-    try:
-        req = client.build_request("GET", target_url, headers=proxy_headers)
-        res = await client.send(req, stream=True)
+# 🆕 Video Player Endpoint - Browser එකෙන්ම play කරන්න
+@app.get("/api/player")
+async def video_player(url: str = Query(...)):
+    """Video player page with embedded video"""
+    target_url = urllib.parse.unquote(url)
+    return HTMLResponse(f"""
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>Video Player</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * {{ margin: 0; padding: 0; }}
+                body {{ background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }}
+                video {{ max-width: 100%; max-height: 100vh; }}
+            </style>
+        </head>
+        <body>
+            <video controls autoplay>
+                <source src="{target_url}" type="video/mp4">
+                <p>Your browser doesn't support HTML5 video. <a href="{target_url}">Download directly</a></p>
+            </video>
+        </body>
+    </html>
+    """)
 
-        if res.status_code not in [200, 206]:
-            await res.aclose()
-            await client.aclose()
-            # Direct redirect fallback if CDN refuses
-            return RedirectResponse(url=target_url, status_code=307)
-
-        async def stream_chunks():
-            try:
-                # 64KB chunks for optimal memory & instant flushing
-                async for chunk in res.aiter_bytes(chunk_size=65536):
-                    yield chunk
-            finally:
-                await res.aclose()
-                await client.aclose()
-
-        # RFC 5987 Compliant Filename Header (Fixes ERR_INVALID_RESPONSE)
-        safe_filename = urllib.parse.quote(filename)
-        content_disposition = f"attachment; filename=\"{filename}\"; filename*=UTF-8''{safe_filename}"
-
-        response_headers = {
-            "Content-Disposition": content_disposition,
-            "Content-Type": res.headers.get("content-type", "video/mp4"),
-            "Accept-Ranges": "bytes"
-        }
-
-        for h in ["content-length", "content-range"]:
-            if h in res.headers:
-                response_headers[h] = res.headers[h]
-
-        return StreamingResponse(
-            stream_chunks(),
-            status_code=res.status_code,
-            headers=response_headers
-        )
-
-    except Exception:
-        await client.aclose()
-        # Fallback to direct redirect on Heroku connection drops
-        return RedirectResponse(url=target_url, status_code=307)
-
+# 🆕 Health Check එක වැඩි දියුණු කළා
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MovieBox Official API", "version": "3.2.0"}
+    return {
+        "status": "ok", 
+        "service": "MovieBox Official API", 
+        "version": "3.2.1",
+        "timestamp": datetime.now().isoformat(),
+        "features": {
+            "proxy_engine": "enhanced",
+            "retry_logic": "enabled",
+            "rate_limit_handling": "enabled",
+            "user_agent_rotation": "enabled"
+        }
+    }
+
+# 🆕 Error Handler
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": exc.detail,
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
+# 🆕 404 Handler
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "success": False,
+            "error": "Endpoint not found",
+            "available_endpoints": [
+                "/",
+                "/docs",
+                "/search",
+                "/api/search",
+                "/api/details",
+                "/api/download-proxy",
+                "/api/player",
+                "/api/health"
+            ]
+        }
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
