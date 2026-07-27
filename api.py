@@ -4,13 +4,13 @@ import hashlib
 import urllib.parse
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 import httpx
 
 app = FastAPI(
-    title="MovieBox Direct & Stream API",
-    description="Direct scraper & Stream engine for MovieBox official links",
-    version="2.6.0"
+    title="MovieBox Direct & Proxy Stream API",
+    description="Direct scraper & Direct Download Proxy for MovieBox official links",
+    version="2.7.0"
 )
 
 app.add_middleware(
@@ -162,7 +162,7 @@ async def get_details(
     se: int = Query(0, description="Season number (0 for Movies)"),
     ep: int = Query(0, description="Episode number (0 for Movies)")
 ):
-    """Fetch Metadata & Official Direct Download Links"""
+    """Fetch Metadata & Official Direct Download Links with Proxied Download URLs"""
     path = detail_path
     if not path and url:
         parsed_url = urllib.parse.urlparse(url)
@@ -212,23 +212,28 @@ async def get_details(
                 for s in streams:
                     res = s.get("resolution", "HD")
                     size_str = format_size(s.get("size", 0))
-                    stream_url = s.get("url", "")
-                    if stream_url:
+                    original_url = s.get("url", "")
+                    if original_url:
+                        # Convert to proxy download URL
+                        proxy_url = f"/api/download-proxy?url={urllib.parse.quote(original_url)}&filename={urllib.parse.quote(title)}_{res}p.mp4"
                         downloads.append({
                             "title": f"Direct Download {res}p{title_suffix}",
-                            "url": stream_url,
+                            "url": proxy_url,
+                            "original_url": original_url,
                             "size": size_str,
                             "quality": f"{res}p"
                         })
 
                 for sub in captions:
                     sub_lang = sub.get("lanName") or sub.get("lan") or "Unknown"
-                    sub_url = sub.get("url")
+                    original_sub_url = sub.get("url")
                     sub_size = format_size(sub.get("size", 0))
-                    if sub_url:
+                    if original_sub_url:
+                        proxy_sub_url = f"/api/download-proxy?url={urllib.parse.quote(original_sub_url)}&filename={urllib.parse.quote(title)}_{sub_lang}.srt"
                         downloads.append({
                             "title": f"Subtitle - {sub_lang}{title_suffix}",
-                            "url": sub_url,
+                            "url": proxy_sub_url,
+                            "original_url": original_sub_url,
                             "size": sub_size,
                             "quality": "SUB"
                         })
@@ -279,13 +284,53 @@ async def get_details(
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+# ⚡ DOWNLOAD PROXY ENGINE (Bypasses MovieBox Download Block)
+@app.get("/api/download-proxy")
+async def download_proxy(url: str = Query(...), filename: str = Query("video.mp4")):
+    """Proxies the direct download link with correct MovieBox headers to bypass 403 errors"""
+    client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=60.0)
+    
+    proxy_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://videodownloader.site/",
+        "Origin": "https://videodownloader.site"
+    }
+
+    try:
+        req = client.build_request("GET", url, headers=proxy_headers)
+        res = await client.send(req, stream=True)
+
+        async def file_stream():
+            try:
+                async for chunk in res.aiter_bytes(chunk_size=65536):
+                    yield chunk
+            finally:
+                await res.aclose()
+                await client.aclose()
+
+        response_headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": res.headers.get("content-type", "application/octet-stream")
+        }
+        if "content-length" in res.headers:
+            response_headers["Content-Length"] = res.headers["content-length"]
+
+        return StreamingResponse(
+            file_stream(),
+            status_code=res.status_code,
+            headers=response_headers
+        )
+    except Exception as e:
+        await client.aclose()
+        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+
 # 🚀 STREAM ENGINE (Player Integration)
 @app.get("/api/stream/{subject_id}")
 async def get_stream_sources(
     subject_id: str, 
     detail_path: str, 
-    se: int = Query(0, description="Season number (Use 0 for Movies)"), 
-    ep: int = Query(0, description="Episode number (Use 0 for Movies)")
+    se: int = Query(0, description="Season number (0 for Movies)"), 
+    ep: int = Query(0, description="Episode number (0 for Movies)")
 ):
     """Fetch video player sources dynamically with Player Referer headers"""
     try:
@@ -314,7 +359,8 @@ async def get_stream_sources(
             {
                 "resolution": f"{s.get('resolutions')}p",
                 "format": s.get("format"),
-                "url": s.get("url"),
+                "url": f"/api/download-proxy?url={urllib.parse.quote(s.get('url'))}&filename=stream_{s.get('resolutions')}p.mp4",
+                "original_url": s.get("url"),
                 "size": format_size(s.get("size", 0)),
                 "duration": s.get("duration"),
                 "codec": s.get("codecName")
@@ -337,4 +383,4 @@ async def get_stream_sources(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MovieBox Official API", "version": "2.6.0"}
+    return {"status": "ok", "service": "MovieBox Official API with Proxy Engine", "version": "2.7.0"}
