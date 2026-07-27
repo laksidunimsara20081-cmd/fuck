@@ -1,385 +1,246 @@
-import re
-import json
-import httpx
-import asyncio
-from fastapi import FastAPI, HTTPException, Query
+import time
+import hashlib
+import urllib.parse
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+import httpx
 
 app = FastAPI(
-    title="MovieBox API Pro",
-    description="Full Pure REST API for moviebox.ph — Zero Scraping",
-    version="2.1.5"
+    title="MovieBox Direct API",
+    description="Direct scraper for MovieBox official download links (No Third-Party Proxy)",
+    version="2.0.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-BASE_URL = "https://moviebox.ph"
-API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
+BASE_URL = "https://themoviebox.xyz"
+H5_API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
-_bearer_token: str | None = None
+def get_client_token() -> str:
+    """Generate dynamic MD5 authentication token for MovieBox"""
+    timestamp = str(int(time.time()))
+    reversed_ts = timestamp[::-1]
+    md5_hash = hashlib.md5(reversed_ts.encode('utf-8')).hexdigest()
+    return f"{timestamp},{md5_hash}"
 
-DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-    "Referer": "https://moviebox.ph/",
-    "Origin": "https://moviebox.ph",
-    "X-Client-Info": '{"timezone":"Asia/Dhaka"}',
-    "X-Request-Lang": "en",
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "sec-ch-ua": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "cross-site",
-}
-
-PLAYER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "X-Client-Info": '{"timezone":"Asia/Dhaka"}',
-    "X-Source": "",
-    "sec-ch-ua": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-}
-
-async def _get_bearer_token() -> str:
-    """Auto-acquire a guest JWT from the x-user response header."""
-    global _bearer_token
-    if _bearer_token:
-        return _bearer_token
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        resp = await client.get(f"{API_BASE}/home?host=moviebox.ph", headers=DEFAULT_HEADERS)
-        x_user = resp.headers.get("x-user")
-        if x_user:
-            _bearer_token = json.loads(x_user).get("token")
-        if not _bearer_token:
-            cookie = resp.headers.get("set-cookie", "")
-            m = re.search(r"token=([^;]+)", cookie)
-            if m:
-                _bearer_token = m.group(1)
-    return _bearer_token or ""
-
-async def _make_request(url: str, method: str = "GET", payload: dict = None, custom_headers: dict = None) -> dict:
-    global _bearer_token
-    token = await _get_bearer_token()
-    headers = {
-        **DEFAULT_HEADERS,
-        "Authorization": f"Bearer {token}" if token else "",
-        **(custom_headers or {})
+def get_headers(referer: str = "https://h5.aoneroom.com/") -> dict:
+    """Get proper MovieBox headers"""
+    token = get_client_token()
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Origin": "https://h5.aoneroom.com",
+        "Referer": referer,
+        "Content-Type": "application/json",
+        "X-Client-Token": token,
+        "x-client-token": token,
+        "X-Request-Lang": "en",
+        "X-Client-Info": '{"timezone":"Asia/Colombo"}'
     }
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        try:
-            if method == "POST":
-                resp = await client.post(url, headers=headers, json=payload)
-            else:
-                resp = await client.get(url, headers=headers)
 
-            x_user = resp.headers.get("x-user")
-            if x_user:
-                new_token = json.loads(x_user).get("token")
-                if new_token:
-                    _bearer_token = new_token
-
-            if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail=f"Upstream API error: {resp.status_code}")
-
-            return resp.json()
-        except Exception as e:
-            if isinstance(e, HTTPException): raise e
-            raise HTTPException(status_code=502, detail=f"Request failed: {str(e)}")
+def format_size(size_bytes: int) -> str:
+    """Format file size in human readable format"""
+    try:
+        size_bytes = int(size_bytes)
+        if size_bytes <= 0:
+            return "N/A"
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} TB"
+    except Exception:
+        return "N/A"
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>MovieBox Pure API | Pro Dashboard</title>
-        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-        <style>
-            :root {
-                --primary: #ff3d71;
-                --secondary: #3366ff;
-                --accent: #00f2ff;
-                --bg: #07080c;
-                --card-bg: rgba(255, 255, 255, 0.03);
-                --glass: rgba(255, 255, 255, 0.06);
-                --text: #ffffff;
-            }
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body {
-                font-family: 'Outfit', sans-serif;
-                background: var(--bg);
-                color: var(--text);
-                overflow-x: hidden;
-                min-height: 100vh;
-                background-image: 
-                    radial-gradient(circle at 10% 10%, rgba(255, 61, 113, 0.12) 0%, transparent 40%),
-                    radial-gradient(circle at 90% 90%, rgba(51, 102, 255, 0.12) 0%, transparent 40%);
-            }
-            .container { max-width: 1200px; margin: 0 auto; padding: 60px 24px; position: relative; }
-            header { text-align: center; margin-bottom: 80px; }
-            h1 {
-                font-size: clamp(2.5rem, 8vw, 4rem); font-weight: 800;
-                background: linear-gradient(135deg, #fff 0%, #aaa 100%);
-                -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-                margin-bottom: 15px; letter-spacing: -2px;
-            }
-            .badge {
-                background: linear-gradient(90deg, var(--primary), var(--secondary));
-                padding: 8px 18px; border-radius: 40px; font-size: 0.85rem; font-weight: 700;
-                display: inline-block; margin-bottom: 25px; text-transform: uppercase; letter-spacing: 1px;
-            }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 30px; margin-top: 20px; }
-            .card {
-                background: var(--card-bg); border: 1px solid var(--glass); border-radius: 28px;
-                padding: 35px; transition: all 0.4s; backdrop-filter: blur(12px);
-                display: flex; flex-direction: column;
-            }
-            .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 18px; display: flex; align-items: center; gap: 12px; }
-            .card-desc { color: #9ea3ac; font-size: 1rem; line-height: 1.6; margin-bottom: 25px; flex-grow: 1; }
-            .endpoint {
-                font-family: 'JetBrains Mono', monospace; background: rgba(0,0,0,0.4);
-                padding: 14px; border-radius: 14px; font-size: 0.85rem; color: var(--accent);
-                border: 1px solid rgba(0,242,255,0.15); margin-bottom: 25px; word-break: break-all;
-            }
-            .btn {
-                display: flex; align-items: center; justify-content: center; padding: 16px;
-                background: #ffffff; color: #000000; text-decoration: none; border-radius: 16px;
-                font-weight: 700; font-size: 0.95rem; transition: all 0.3s;
-            }
-            .btn:hover { background: var(--primary); color: #fff; }
-            footer { text-align: center; padding: 80px 0 40px; }
-            .dev-tag {
-                font-weight: 800; color: #666; letter-spacing: 3px; text-transform: uppercase;
-                font-size: 0.75rem; border: 1px solid #222; padding: 12px 30px; border-radius: 50px;
-                display: inline-block; background: rgba(255,255,255,0.01);
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <header>
-                <div class="badge">Enterprise API Solution</div>
-                <h1>MovieBox Pro</h1>
-                <p style="color: #667; font-size: 1.25rem; font-weight: 300;">State-of-the-Art Pure API Architecture</p>
-            </header>
-            <div class="grid">
-                <div class="card">
-                    <div class="card-title">🏠 Discover Home</div>
-                    <p class="card-desc">The ultimate window into MovieBox.</p>
-                    <div class="endpoint">/home</div>
-                    <a href="/home" target="_blank" class="btn">Launch API</a>
-                </div>
-                <div class="card">
-                    <div class="card-title">🔍 Smart Search</div>
-                    <p class="card-desc">High-precision search engine results.</p>
-                    <div class="endpoint">/search?q=Attack on Titan</div>
-                    <a href="/search?q=Attack on Titan" target="_blank" class="btn">Test Search</a>
-                </div>
-            </div>
-            <footer>
-                <div class="dev-tag">Developer: Walter</div>
-            </footer>
-        </div>
-    </body>
+async def root():
+    return """
+    <html>
+        <head><title>MovieBox Direct API</title></head>
+        <body style="font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding-top:50px;">
+            <h1 style="color:#e50914;">🎬 MovieBox Direct API is Running!</h1>
+            <p>Go to <a href="/docs" style="color:#00d2ff;">/docs</a> to test endpoints.</p>
+        </body>
     </html>
     """
-    return HTMLResponse(content=html_content)
-
-@app.get("/home")
-async def get_home():
-    url = f"{API_BASE}/home?host=moviebox.ph"
-    data = await _make_request(url)
-    sections = []
-    for op in data.get("data", {}).get("operatingList", []) or []:
-        op_type = op.get("type")
-        title = op.get("title", "Featured")
-        if op_type == "BANNER":
-            items = [{
-                "name": item.get("title") or (item.get("subject") or {}).get("title"),
-                "poster_url": item.get("image", {}).get("url") or (item.get("subject") or {}).get("cover", {}).get("url"),
-                "slug": item.get("detailPath") or (item.get("subject") or {}).get("detailPath"),
-                "subject_id": (item.get("subject") or {}).get("subjectId"),
-                "badge": (item.get("subject") or {}).get("corner")
-            } for item in op.get("banner", {}).get("items", []) if item.get("title") and "Communities" not in item.get("title")]
-            sections.append({"section": "Banner", "count": len(items), "items": items})
-        elif op_type in ["SUBJECTS_MOVIE", "SUBJECTS_TV", "SUBJECTS_ANIMATION"]:
-            items = [{
-                "name": sub.get("title"),
-                "poster_url": sub.get("cover", {}).get("url"),
-                "slug": sub.get("detailPath"),
-                "subject_id": sub.get("subjectId"),
-                "badge": sub.get("corner"),
-                "rating": sub.get("imdbRatingValue")
-            } for sub in op.get("subjects", [])]
-            sections.append({"section": title, "count": len(items), "items": items})
-    return {"status": "success", "sections": sections}
-
-async def _get_category_data(tab_id: int, page: int = 1, per_page: int = 24, sort: str = "RECOMMEND") -> dict:
-    url = f"{API_BASE}/subject/filter"
-    payload = {"tabId": tab_id, "filter": {"sort": sort, "genre": "ALL", "country": "ALL", "year": "ALL", "language": "ALL"}, "page": page, "perPage": per_page}
-    data = await _make_request(url, method="POST", payload=payload)
-    inner = data.get("data", {})
-    raw_items = inner.get("items", inner.get("subjects", []))
-    items = [{
-        "name": sub.get("title"),
-        "poster_url": sub.get("cover", {}).get("url"),
-        "slug": sub.get("detailPath"),
-        "subject_id": sub.get("subjectId"),
-        "badge": sub.get("corner"),
-        "rating": sub.get("imdbRatingValue"),
-        "year": sub.get("releaseDate", "")[:4] if sub.get("releaseDate") else None
-    } for sub in raw_items]
-    pager = inner.get("pager", {})
-    total = pager.get("totalCount") or inner.get("total") or len(items)
-    return {"page": page, "per_page": per_page, "total": total, "items": items}
-
-@app.get("/movies")
-async def get_movies(page: int = 1, sort: str = "RECOMMEND"):
-    return await _get_category_data(tab_id=2, page=page, sort=sort)
-
-@app.get("/tv-series")
-async def get_tv_series(page: int = 1, sort: str = "RECOMMEND"):
-    return await _get_category_data(tab_id=5, page=page, sort=sort)
-
-@app.get("/animation")
-async def get_animation(page: int = 1, sort: str = "RECOMMEND"):
-    return await _get_category_data(tab_id=8, page=page, sort=sort)
-
-@app.get("/search/suggest")
-async def get_search_suggestions(q: str = Query(..., min_length=1)):
-    url = f"{API_BASE}/subject/search-suggest"
-    data = await _make_request(url, method="POST", payload={"keyword": q, "perPage": 10})
-    inner = data.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-    suggestions = []
-    for item in raw:
-        sub = item.get("subject") or {}
-        suggestions.append({
-            "title": sub.get("title") or item.get("word") or item.get("title"),
-            "slug": sub.get("detailPath") or item.get("detailPath"),
-            "subject_id": sub.get("subjectId") or item.get("subjectId")
-        })
-    return {"suggestions": suggestions}
 
 @app.get("/search")
-async def search(q: str = Query(..., min_length=1), page: int = 1):
-    url = f"{API_BASE}/subject/search"
-    data = await _make_request(url, method="POST", payload={"keyword": q, "page": page, "perPage": 20})
-    inner = data.get("data", {})
-    raw = inner.get("items", inner.get("list", []))
-    items = [{
-        "name": sub.get("title"),
-        "poster_url": sub.get("cover", {}).get("url"),
-        "slug": sub.get("detailPath"),
-        "subject_id": sub.get("subjectId")
-    } for sub in raw]
-    pager = inner.get("pager", {})
-    total = pager.get("totalCount") or inner.get("total") or len(items)
-    return {"query": q, "page": page, "total": total, "items": items}
-
-@app.get("/detail/{slug}")
-async def get_movie_detail(slug: str):
-    url = f"{API_BASE}/detail?detailPath={slug}"
-    return await _make_request(url)
-
-@app.get("/api/stream/{subject_id}")
-async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
-    dom_data = await _make_request(f"{API_BASE}/media-player/get-domain")
-    domain = dom_data.get("data", "https://netfilm.world").rstrip("/")
-
-    player_referer = (
-        f"{domain}/spa/videoPlayPage/movies/{detail_path}"
-        f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
-    )
-    play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
-
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
-        data = resp.json().get("data", {})
-
-    has_resource = data.get("hasResource", False)
-    streams = [
-        {
-            "resolution": f"{s.get('resolutions')}p",
-            "format": s.get("format"),
-            "url": s.get("url"),
-            "size": s.get("size"),
-            "duration": s.get("duration"),
-            "codec": s.get("codecName")
-        }
-        for s in data.get("streams", [])
-    ]
-    return {
-        "subject_id": subject_id,
-        "se": se,
-        "ep": ep,
-        "has_resource": has_resource,
-        "sources": streams,
-        "hls": data.get("hls", []),
-        "dash": data.get("dash", []),
-        "free_episodes": data.get("freeNum"),
-        "limited": data.get("limited", False),
-        "note": None if has_resource else "No stream found for this episode."
+@app.get("/api/search")
+async def search_content(q: str = Query(..., description="Search query")):
+    """Search Movies & TV Shows"""
+    url = f"{H5_API_BASE}/subject/search"
+    payload = {
+        "keyword": q,
+        "page": 1,
+        "perPage": 30,
+        "subjectType": 0
     }
+    
+    async with httpx.AsyncClient(verify=False, timeout=12) as client:
+        try:
+            response = await client.post(url, json=payload, headers=get_headers())
+            if response.status_code != 200:
+                return {"success": False, "error": f"API status code {response.status_code}", "data": []}
+            
+            data = response.json()
+            items = data.get("data", {}).get("items", [])
+            
+            results = []
+            for item in items:
+                detail_path = item.get("detailPath")
+                if not detail_path:
+                    continue
+                
+                cover_url = item.get("cover", {}).get("url", "")
+                release_date = item.get("releaseDate", "")
+                year = release_date[:4] if release_date else "N/A"
+                
+                results.append({
+                    "title": item.get("title", ""),
+                    "link": f"{BASE_URL}/detail/{detail_path}",
+                    "image": cover_url,
+                    "type": "tvshows" if item.get("subjectType") == 2 else "movies",
+                    "quality": "HD",
+                    "year": year,
+                    "subjectId": item.get("subjectId"),
+                    "detailPath": detail_path
+                })
+            return {"success": True, "total": len(results), "data": results}
+        except Exception as e:
+            return {"success": False, "error": str(e), "data": []}
 
-@app.get("/api/stream/{subject_id}/captions")
-async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
-    dom_data = await _make_request(f"{API_BASE}/media-player/get-domain")
-    domain = dom_data.get("data", "https://netfilm.world").rstrip("/")
+@app.get("/api/details")
+@app.get("/detail")
+async def get_details(
+    url: str = Query(None, description="Full MovieBox URL or detailPath"),
+    detail_path: str = Query(None, description="Direct detailPath (e.g. avatar-123)"),
+    se: int = Query(1, description="Season number (for TV Shows)"),
+    ep: int = Query(1, description="Episode number (for TV Shows)")
+):
+    """Fetch Metadata & Official Direct Download Links"""
+    path = detail_path
+    if not path and url:
+        parsed_url = urllib.parse.urlparse(url)
+        path_parts = parsed_url.path.strip("/").split("/")
+        if path_parts:
+            path = path_parts[-1]
 
-    player_referer = (
-        f"{domain}/spa/videoPlayPage/movies/{detail_path}"
-        f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
-    )
-    play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
+    if not path:
+        raise HTTPException(status_code=400, detail="Provide 'url' or 'detail_path'")
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        play_resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
-        play_data = play_resp.json().get("data", {})
+    detail_url = f"{H5_API_BASE}/detail?detailPath={path}"
 
-    streams = play_data.get("streams", [])
-    dash = play_data.get("dash", [])
+    async with httpx.AsyncClient(verify=False, timeout=15) as client:
+        try:
+            r_detail = await client.get(detail_url, headers=get_headers())
+            if r_detail.status_code != 200:
+                return {"success": False, "error": "Failed to fetch details"}
 
-    stream_id = None
-    stream_format = None
-    if streams:
-        stream_id = streams[0].get("id")
-        stream_format = streams[0].get("format", "MP4")
-    elif dash:
-        stream_id = dash[0].get("id")
-        stream_format = dash[0].get("format", "DASH")
+            res_data = r_detail.json().get("data", {})
+            subject = res_data.get("subject", {})
+            if not subject:
+                return {"success": False, "error": "Metadata empty"}
 
-    if not stream_id:
-        return {"subject_id": subject_id, "se": se, "ep": ep, "count": 0, "captions": []}
+            title = subject.get("title", "")
+            story = subject.get("description", "")
+            image = subject.get("cover", {}).get("url", "")
+            imdb = subject.get("imdbRatingValue", "N/A")
+            genres_str = subject.get("genre", "")
+            genres = [g.strip() for g in genres_str.split(",") if g.strip()] if genres_str else []
+            subject_id = subject.get("subjectId")
+            subject_type = subject.get("subjectType")
 
-    cap_url = (
-        f"{API_BASE}/subject/caption"
-        f"?format={stream_format}&id={stream_id}&subjectId={subject_id}&detailPath={detail_path}"
-    )
-    data = await _make_request(cap_url)
-    inner = data.get("data", {})
-    captions = inner.get("captions", []) if isinstance(inner, dict) else inner
-    return {"subject_id": subject_id, "se": se, "ep": ep, "count": len(captions), "captions": captions}
+            req_se = se if subject_type == 2 else 0
+            req_ep = ep if subject_type == 2 else 0
 
-if __name__ == "__main__":
-    import uvicorn
-    # Local එකේ විතරක් run වෙන්න:
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+            # Get Official MovieBox Direct Links
+            download_url = f"{H5_API_BASE}/subject/download?subjectId={subject_id}&se={req_se}&ep={req_ep}&detailPath={path}"
+            r_play = await client.get(download_url, headers=get_headers("https://videodownloader.site/"))
+
+            downloads = []
+            if r_play.status_code == 200:
+                play_data = r_play.json().get("data", {})
+                streams = play_data.get("downloads", [])
+                captions = play_data.get("captions", [])
+                title_suffix = f" (S{req_se}E{req_ep})" if subject_type == 2 else ""
+
+                for s in streams:
+                    res = s.get("resolution", "HD")
+                    size_str = format_size(s.get("size", 0))
+                    stream_url = s.get("url", "")
+                    if stream_url:
+                        downloads.append({
+                            "title": f"Direct Download {res}p{title_suffix}",
+                            "url": stream_url,
+                            "size": size_str,
+                            "quality": f"{res}p"
+                        })
+
+                for sub in captions:
+                    sub_lang = sub.get("lanName") or sub.get("lan") or "Unknown"
+                    sub_url = sub.get("url")
+                    sub_size = format_size(sub.get("size", 0))
+                    if sub_url:
+                        downloads.append({
+                            "title": f"Subtitle - {sub_lang}{title_suffix}",
+                            "url": sub_url,
+                            "size": sub_size,
+                            "quality": "SUB"
+                        })
+
+            # Fallback to Trailer if no downloads
+            if not downloads:
+                trailer_url = subject.get("trailer", {}).get("videoAddress", {}).get("url", "")
+                if trailer_url:
+                    downloads.append({
+                        "title": "Trailer (MP4)",
+                        "url": trailer_url,
+                        "size": "N/A",
+                        "quality": "Trailer"
+                    })
+
+            cast_list = [
+                {
+                    "name": star.get("name", ""),
+                    "role": star.get("character", "N/A"),
+                    "image": star.get("avatarUrl", "")
+                }
+                for star in res_data.get("stars", [])
+            ]
+
+            director_val = "N/A"
+            for staff in subject.get("staffList", []):
+                if staff.get("staffType") == 2 or "director" in staff.get("job", "").lower():
+                    director_val = staff.get("name", "N/A")
+                    break
+
+            return {
+                "success": True,
+                "data": {
+                    "title": title,
+                    "image": image,
+                    "imdb": imdb,
+                    "director": director_val,
+                    "genres": genres,
+                    "story": story,
+                    "cast": cast_list,
+                    "downloads": downloads,
+                    "subjectId": subject_id,
+                    "subjectType": subject_type,
+                    "detailPath": path
+                }
+            }
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "MovieBox Official API", "version": "2.0.0"}
+
