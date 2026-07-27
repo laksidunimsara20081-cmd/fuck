@@ -10,7 +10,7 @@ import httpx
 app = FastAPI(
     title="MovieBox Direct & Stream API",
     description="Direct scraper & Stream engine for MovieBox official links",
-    version="2.5.0"
+    version="2.6.0"
 )
 
 app.add_middleware(
@@ -159,8 +159,8 @@ async def search_content(q: str = Query(..., description="Search query")):
 async def get_details(
     url: str = Query(None, description="Full MovieBox URL or detailPath"),
     detail_path: str = Query(None, description="Direct detailPath (e.g. avatar-123)"),
-    se: int = Query(1, description="Season number (for TV Shows)"),
-    ep: int = Query(1, description="Episode number (for TV Shows)")
+    se: int = Query(0, description="Season number (0 for Movies)"),
+    ep: int = Query(0, description="Episode number (0 for Movies)")
 ):
     """Fetch Metadata & Official Direct Download Links"""
     path = detail_path
@@ -281,7 +281,12 @@ async def get_details(
 
 # 🚀 STREAM ENGINE (Player Integration)
 @app.get("/api/stream/{subject_id}")
-async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
+async def get_stream_sources(
+    subject_id: str, 
+    detail_path: str, 
+    se: int = Query(0, description="Season number (Use 0 for Movies)"), 
+    ep: int = Query(0, description="Episode number (Use 0 for Movies)")
+):
     """Fetch video player sources dynamically with Player Referer headers"""
     try:
         token = await _get_bearer_token()
@@ -289,16 +294,16 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        # 1. Domain Resolution
         async with httpx.AsyncClient(verify=False, timeout=25) as client:
             dom_resp = await client.get(f"{H5_API_BASE}/media-player/get-domain", headers=headers)
-            domain = dom_resp.json().get("data", "https://netfilm.world").rstrip("/")
+            domain_val = dom_resp.json().get("data")
+            domain = domain_val.rstrip("/") if domain_val else "https://netfilm.world"
 
-            # 2. Player-side referer build
             player_referer = (
                 f"{domain}/spa/videoPlayPage/movies/{detail_path}"
                 f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
             )
+            
             play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
 
             play_resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
@@ -332,4 +337,4 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MovieBox Official API", "version": "2.5.0"}
+    return {"status": "ok", "service": "MovieBox Official API", "version": "2.6.0"}
