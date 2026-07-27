@@ -3,13 +3,13 @@ import hashlib
 import urllib.parse
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 import httpx
 
 app = FastAPI(
     title="MovieBox Direct API",
-    description="Direct scraper for MovieBox official download links (No Third-Party Proxy)",
-    version="2.0.0"
+    description="Direct scraper with Stream Pipe support to bypass 429 Rate Limits",
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -24,14 +24,12 @@ BASE_URL = "https://themoviebox.xyz"
 H5_API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
 def get_client_token() -> str:
-    """Generate dynamic MD5 authentication token for MovieBox"""
     timestamp = str(int(time.time()))
     reversed_ts = timestamp[::-1]
     md5_hash = hashlib.md5(reversed_ts.encode('utf-8')).hexdigest()
     return f"{timestamp},{md5_hash}"
 
 def get_headers(referer: str = "https://h5.aoneroom.com/") -> dict:
-    """Get proper MovieBox headers"""
     token = get_client_token()
     return {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -45,7 +43,6 @@ def get_headers(referer: str = "https://h5.aoneroom.com/") -> dict:
     }
 
 def format_size(size_bytes: int) -> str:
-    """Format file size in human readable format"""
     try:
         size_bytes = int(size_bytes)
         if size_bytes <= 0:
@@ -65,15 +62,34 @@ async def root():
         <head><title>MovieBox Direct API</title></head>
         <body style="font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding-top:50px;">
             <h1 style="color:#e50914;">🎬 MovieBox Direct API is Running!</h1>
-            <p>Go to <a href="/docs" style="color:#00d2ff;">/docs</a> to test endpoints.</p>
+            <p>Visit <a href="/docs" style="color:#00d2ff;">/docs</a> to test endpoints.</p>
         </body>
     </html>
     """
 
+# 🚀 අලුත් Bypass Endpoint එක: Media Stream එක කෙළින්ම Pipe කිරීම
+@app.get("/api/download-stream")
+async def download_stream(url: str = Query(..., description="Direct Hakunaymatata URL")):
+    """Bypass 429 Nginx block by proxying/piping video bytes with valid headers"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://h5.aoneroom.com/",
+        "Origin": "https://h5.aoneroom.com"
+    }
+    
+    async def stream_generator():
+        client = httpx.AsyncClient(verify=False, timeout=60.0)
+        async with client.stream("GET", url, headers=headers) as response:
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch video stream")
+            async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(stream_generator(), media_type="video/mp4")
+
 @app.get("/search")
 @app.get("/api/search")
 async def search_content(q: str = Query(..., description="Search query")):
-    """Search Movies & TV Shows"""
     url = f"{H5_API_BASE}/subject/search"
     payload = {
         "keyword": q,
@@ -120,10 +136,9 @@ async def search_content(q: str = Query(..., description="Search query")):
 async def get_details(
     url: str = Query(None, description="Full MovieBox URL or detailPath"),
     detail_path: str = Query(None, description="Direct detailPath (e.g. avatar-123)"),
-    se: int = Query(1, description="Season number (for TV Shows)"),
-    ep: int = Query(1, description="Episode number (for TV Shows)")
+    se: int = Query(1, description="Season number"),
+    ep: int = Query(1, description="Episode number")
 ):
-    """Fetch Metadata & Official Direct Download Links"""
     path = detail_path
     if not path and url:
         parsed_url = urllib.parse.urlparse(url)
@@ -159,7 +174,6 @@ async def get_details(
             req_se = se if subject_type == 2 else 0
             req_ep = ep if subject_type == 2 else 0
 
-            # Get Official MovieBox Direct Links
             download_url = f"{H5_API_BASE}/subject/download?subjectId={subject_id}&se={req_se}&ep={req_ep}&detailPath={path}"
             r_play = await client.get(download_url, headers=get_headers("https://videodownloader.site/"))
 
@@ -175,9 +189,12 @@ async def get_details(
                     size_str = format_size(s.get("size", 0))
                     stream_url = s.get("url", "")
                     if stream_url:
+                        # 429 Block වීම වැළැක්වීමට අපේ Stream Pipe Link එක හදමු
+                        pipe_url = f"https://fuck-box-045b2a0c6a81.herokuapp.com/api/download-stream?url={urllib.parse.quote(stream_url)}"
                         downloads.append({
                             "title": f"Direct Download {res}p{title_suffix}",
                             "url": stream_url,
+                            "stream_pipe_url": pipe_url,
                             "size": size_str,
                             "quality": f"{res}p"
                         })
@@ -194,45 +211,16 @@ async def get_details(
                             "quality": "SUB"
                         })
 
-            # Fallback to Trailer if no downloads
-            if not downloads:
-                trailer_url = subject.get("trailer", {}).get("videoAddress", {}).get("url", "")
-                if trailer_url:
-                    downloads.append({
-                        "title": "Trailer (MP4)",
-                        "url": trailer_url,
-                        "size": "N/A",
-                        "quality": "Trailer"
-                    })
-
-            cast_list = [
-                {
-                    "name": star.get("name", ""),
-                    "role": star.get("character", "N/A"),
-                    "image": star.get("avatarUrl", "")
-                }
-                for star in res_data.get("stars", [])
-            ]
-
-            director_val = "N/A"
-            for staff in subject.get("staffList", []):
-                if staff.get("staffType") == 2 or "director" in staff.get("job", "").lower():
-                    director_val = staff.get("name", "N/A")
-                    break
-
             return {
                 "success": True,
                 "data": {
                     "title": title,
                     "image": image,
                     "imdb": imdb,
-                    "director": director_val,
                     "genres": genres,
                     "story": story,
-                    "cast": cast_list,
                     "downloads": downloads,
                     "subjectId": subject_id,
-                    "subjectType": subject_type,
                     "detailPath": path
                 }
             }
@@ -242,5 +230,4 @@ async def get_details(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MovieBox Official API", "version": "2.0.0"}
-
+    return {"status": "ok", "service": "MovieBox Official API", "version": "2.1.0"}
