@@ -1,4 +1,5 @@
 import time
+import json
 import hashlib
 import urllib.parse
 from fastapi import FastAPI, Query, HTTPException
@@ -7,9 +8,9 @@ from fastapi.responses import HTMLResponse
 import httpx
 
 app = FastAPI(
-    title="MovieBox Direct API",
-    description="Direct scraper for MovieBox official download links (No Third-Party Proxy)",
-    version="2.0.0"
+    title="MovieBox Direct & Stream API",
+    description="Direct scraper & Stream engine for MovieBox official links",
+    version="2.5.0"
 )
 
 app.add_middleware(
@@ -23,6 +24,28 @@ app.add_middleware(
 BASE_URL = "https://themoviebox.xyz"
 H5_API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
+_bearer_token: str | None = None
+
+# Global Headers
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Origin": "https://h5.aoneroom.com",
+    "Referer": "https://h5.aoneroom.com/",
+    "Content-Type": "application/json",
+    "X-Request-Lang": "en",
+    "X-Client-Info": '{"timezone":"Asia/Colombo"}'
+}
+
+PLAYER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "X-Client-Info": '{"timezone":"Asia/Colombo"}',
+    "X-Source": ""
+}
+
 def get_client_token() -> str:
     """Generate dynamic MD5 authentication token for MovieBox"""
     timestamp = str(int(time.time()))
@@ -31,18 +54,34 @@ def get_client_token() -> str:
     return f"{timestamp},{md5_hash}"
 
 def get_headers(referer: str = "https://h5.aoneroom.com/") -> dict:
-    """Get proper MovieBox headers"""
+    """Get proper MovieBox headers with dynamic X-Client-Token"""
     token = get_client_token()
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Origin": "https://h5.aoneroom.com",
-        "Referer": referer,
-        "Content-Type": "application/json",
-        "X-Client-Token": token,
-        "x-client-token": token,
-        "X-Request-Lang": "en",
-        "X-Client-Info": '{"timezone":"Asia/Colombo"}'
-    }
+    headers = DEFAULT_HEADERS.copy()
+    headers["Referer"] = referer
+    headers["X-Client-Token"] = token
+    headers["x-client-token"] = token
+    return headers
+
+async def _get_bearer_token() -> str:
+    """Auto-acquire a guest JWT token for Stream Engine"""
+    global _bearer_token
+    if _bearer_token:
+        return _bearer_token
+    async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=25) as client:
+        try:
+            resp = await client.get(f"{H5_API_BASE}/home?host=moviebox.ph", headers=get_headers())
+            x_user = resp.headers.get("x-user")
+            if x_user:
+                _bearer_token = json.loads(x_user).get("token")
+            if not _bearer_token:
+                cookie = resp.headers.get("set-cookie", "")
+                import re as _re
+                m = _re.search(r"token=([^;]+)", cookie)
+                if m:
+                    _bearer_token = m.group(1)
+        except Exception:
+            pass
+    return _bearer_token or ""
 
 def format_size(size_bytes: int) -> str:
     """Format file size in human readable format"""
@@ -240,6 +279,57 @@ async def get_details(
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+# 🚀 STREAM ENGINE (Player Integration)
+@app.get("/api/stream/{subject_id}")
+async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
+    """Fetch video player sources dynamically with Player Referer headers"""
+    try:
+        token = await _get_bearer_token()
+        headers = get_headers()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        # 1. Domain Resolution
+        async with httpx.AsyncClient(verify=False, timeout=25) as client:
+            dom_resp = await client.get(f"{H5_API_BASE}/media-player/get-domain", headers=headers)
+            domain = dom_resp.json().get("data", "https://netfilm.world").rstrip("/")
+
+            # 2. Player-side referer build
+            player_referer = (
+                f"{domain}/spa/videoPlayPage/movies/{detail_path}"
+                f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
+            )
+            play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
+
+            play_resp = await client.get(play_url, headers={**PLAYER_HEADERS, "Referer": player_referer})
+            play_data = play_resp.json().get("data", {})
+
+        has_resource = play_data.get("hasResource", False)
+        streams = [
+            {
+                "resolution": f"{s.get('resolutions')}p",
+                "format": s.get("format"),
+                "url": s.get("url"),
+                "size": format_size(s.get("size", 0)),
+                "duration": s.get("duration"),
+                "codec": s.get("codecName")
+            }
+            for s in play_data.get("streams", [])
+        ]
+        return {
+            "success": True,
+            "subject_id": subject_id,
+            "se": se,
+            "ep": ep,
+            "has_resource": has_resource,
+            "sources": streams,
+            "hls": play_data.get("hls", []),
+            "dash": play_data.get("dash", []),
+            "note": None if has_resource else "No stream found for this episode."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MovieBox Official API", "version": "2.0.0"}
+    return {"status": "ok", "service": "MovieBox Official API", "version": "2.5.0"}
