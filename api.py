@@ -40,7 +40,6 @@ DEFAULT_HEADERS = {
     "sec-fetch-site": "cross-site",
 }
 
-# Player-side headers for the stream domain (netfilm.world)
 PLAYER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
     "Accept": "application/json",
@@ -68,10 +67,8 @@ async def _get_bearer_token() -> str:
         if x_user:
             _bearer_token = json.loads(x_user).get("token")
         if not _bearer_token:
-            # fallback: read from set-cookie
             cookie = resp.headers.get("set-cookie", "")
-            import re as _re
-            m = _re.search(r"token=([^;]+)", cookie)
+            m = re.search(r"token=([^;]+)", cookie)
             if m:
                 _bearer_token = m.group(1)
     return _bearer_token or ""
@@ -91,7 +88,6 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
             else:
                 resp = await client.get(url, headers=headers)
 
-            # Refresh token if server sends a new one
             x_user = resp.headers.get("x-user")
             if x_user:
                 new_token = json.loads(x_user).get("token")
@@ -126,9 +122,7 @@ async def dashboard():
                 --glass: rgba(255, 255, 255, 0.06);
                 --text: #ffffff;
             }
-
             * { margin: 0; padding: 0; box-sizing: border-box; }
-            
             body {
                 font-family: 'Outfit', sans-serif;
                 background: var(--bg);
@@ -139,176 +133,43 @@ async def dashboard():
                     radial-gradient(circle at 10% 10%, rgba(255, 61, 113, 0.12) 0%, transparent 40%),
                     radial-gradient(circle at 90% 90%, rgba(51, 102, 255, 0.12) 0%, transparent 40%);
             }
-
-            .container {
-                max-width: 1200px;
-                margin: 0 auto;
-                padding: 60px 24px;
-                position: relative;
-            }
-
-            header {
-                text-align: center;
-                margin-bottom: 80px;
-                animation: fadeInDown 1s ease-out;
-            }
-
-            @keyframes fadeInDown {
-                from { opacity: 0; transform: translateY(-30px); }
-                to { opacity: 1; transform: translateY(0); }
-            }
-
+            .container { max-width: 1200px; margin: 0 auto; padding: 60px 24px; position: relative; }
+            header { text-align: center; margin-bottom: 80px; }
             h1 {
-                font-size: clamp(2.5rem, 8vw, 4rem);
-                font-weight: 800;
+                font-size: clamp(2.5rem, 8vw, 4rem); font-weight: 800;
                 background: linear-gradient(135deg, #fff 0%, #aaa 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 15px;
-                letter-spacing: -2px;
+                -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+                margin-bottom: 15px; letter-spacing: -2px;
             }
-
             .badge {
                 background: linear-gradient(90deg, var(--primary), var(--secondary));
-                padding: 8px 18px;
-                border-radius: 40px;
-                font-size: 0.85rem;
-                font-weight: 700;
-                display: inline-block;
-                margin-bottom: 25px;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                box-shadow: 0 10px 30px rgba(255, 61, 113, 0.3);
+                padding: 8px 18px; border-radius: 40px; font-size: 0.85rem; font-weight: 700;
+                display: inline-block; margin-bottom: 25px; text-transform: uppercase; letter-spacing: 1px;
             }
-
-            .grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-                gap: 30px;
-                margin-top: 20px;
-            }
-
+            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 30px; margin-top: 20px; }
             .card {
-                background: var(--card-bg);
-                border: 1px solid var(--glass);
-                border-radius: 28px;
-                padding: 35px;
-                transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-                backdrop-filter: blur(12px);
-                position: relative;
-                overflow: hidden;
-                display: flex;
-                flex-direction: column;
+                background: var(--card-bg); border: 1px solid var(--glass); border-radius: 28px;
+                padding: 35px; transition: all 0.4s; backdrop-filter: blur(12px);
+                display: flex; flex-direction: column;
             }
-
-            @media (hover: hover) {
-                .card:hover {
-                    transform: translateY(-12px) scale(1.02);
-                    border-color: rgba(255,255,255,0.2);
-                    box-shadow: 0 30px 60px rgba(0,0,0,0.5);
-                }
-            }
-
-            .card-title {
-                font-size: 1.5rem;
-                font-weight: 700;
-                margin-bottom: 18px;
-                display: flex;
-                align-items: center;
-                gap: 12px;
-            }
-
-            .card-title i {
-                width: 32px; height: 32px;
-                background: rgba(255,255,255,0.05);
-                border-radius: 8px;
-                display: flex; align-items: center; justify-content: center;
-                font-size: 1rem; color: var(--accent);
-                font-style: normal;
-            }
-
-            .card-desc {
-                color: #9ea3ac;
-                font-size: 1rem;
-                line-height: 1.6;
-                margin-bottom: 25px;
-                flex-grow: 1;
-            }
-
+            .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 18px; display: flex; align-items: center; gap: 12px; }
+            .card-desc { color: #9ea3ac; font-size: 1rem; line-height: 1.6; margin-bottom: 25px; flex-grow: 1; }
             .endpoint {
-                font-family: 'JetBrains Mono', monospace;
-                background: rgba(0,0,0,0.4);
-                padding: 14px;
-                border-radius: 14px;
-                font-size: 0.85rem;
-                color: var(--accent);
-                border: 1px solid rgba(0,242,255,0.15);
-                margin-bottom: 25px;
-                word-break: break-all;
-                position: relative;
+                font-family: 'JetBrains Mono', monospace; background: rgba(0,0,0,0.4);
+                padding: 14px; border-radius: 14px; font-size: 0.85rem; color: var(--accent);
+                border: 1px solid rgba(0,242,255,0.15); margin-bottom: 25px; word-break: break-all;
             }
-
-            .endpoint::after {
-                content: 'GET';
-                position: absolute;
-                right: 14px; top: 14px;
-                font-size: 0.65rem; font-weight: 800;
-                color: rgba(255,255,255,0.3);
-            }
-
             .btn {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                padding: 16px;
-                background: #ffffff;
-                color: #000000;
-                text-decoration: none;
-                border-radius: 16px;
-                font-weight: 700;
-                font-size: 0.95rem;
-                transition: all 0.3s;
+                display: flex; align-items: center; justify-content: center; padding: 16px;
+                background: #ffffff; color: #000000; text-decoration: none; border-radius: 16px;
+                font-weight: 700; font-size: 0.95rem; transition: all 0.3s;
             }
-
-            .btn:hover {
-                background: var(--primary);
-                color: #fff;
-                transform: translateY(-2px);
-                box-shadow: 0 10px 25px rgba(255, 61, 113, 0.4);
-            }
-
-            footer {
-                text-align: center;
-                padding: 80px 0 40px;
-                animation: fadeIn 2s ease;
-            }
-
-            @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-
+            .btn:hover { background: var(--primary); color: #fff; }
+            footer { text-align: center; padding: 80px 0 40px; }
             .dev-tag {
-                font-weight: 800;
-                color: #666;
-                letter-spacing: 3px;
-                text-transform: uppercase;
-                font-size: 0.75rem;
-                border: 1px solid #222;
-                padding: 12px 30px;
-                border-radius: 50px;
-                display: inline-block;
-                background: rgba(255,255,255,0.01);
-                transition: all 0.3s;
-            }
-
-            .dev-tag:hover {
-                color: var(--text);
-                border-color: var(--primary);
-                letter-spacing: 5px;
-            }
-
-            @media (max-width: 480px) {
-                .container { padding: 40px 16px; }
-                .card { padding: 25px; }
-                h1 { margin-bottom: 10px; }
+                font-weight: 800; color: #666; letter-spacing: 3px; text-transform: uppercase;
+                font-size: 0.75rem; border: 1px solid #222; padding: 12px 30px; border-radius: 50px;
+                display: inline-block; background: rgba(255,255,255,0.01);
             }
         </style>
     </head>
@@ -319,51 +180,20 @@ async def dashboard():
                 <h1>MovieBox Pro</h1>
                 <p style="color: #667; font-size: 1.25rem; font-weight: 300;">State-of-the-Art Pure API Architecture</p>
             </header>
-
             <div class="grid">
                 <div class="card">
-                    <div class="card-title"><i>🏠</i> Discover Home</div>
-                    <p class="card-desc">The ultimate window into MovieBox. Headlines, recommended content, and trending blocks updated in real-time.</p>
+                    <div class="card-title">🏠 Discover Home</div>
+                    <p class="card-desc">The ultimate window into MovieBox.</p>
                     <div class="endpoint">/home</div>
                     <a href="/home" target="_blank" class="btn">Launch API</a>
                 </div>
-
                 <div class="card">
-                    <div class="card-title"><i>🔍</i> Smart Search</div>
-                    <p class="card-desc">High-precision search engine results. Returns titles, posters, and slugs for lightning-fast matching.</p>
+                    <div class="card-title">🔍 Smart Search</div>
+                    <p class="card-desc">High-precision search engine results.</p>
                     <div class="endpoint">/search?q=Attack on Titan</div>
                     <a href="/search?q=Attack on Titan" target="_blank" class="btn">Test Search</a>
                 </div>
-
-                <div class="card">
-                    <div class="card-title"><i>🆔</i> Metadata A-Z</div>
-                    <p class="card-desc">Deep-dive into any subject. Episodes, seasons, languages, and full high-resolution metadata trees.</p>
-                    <div class="endpoint">/detail/{slug}</div>
-                    <a href="/detail/attack-on-titan-hindi-kGWQOIx0d4" target="_blank" class="btn">Fetch Specs</a>
-                </div>
-
-                <div class="card">
-                    <div class="card-title"><i>🎬</i> Stream Engine</div>
-                    <p class="card-desc">Dynamic domain discovery and direct MP4 extraction. Supports multiple resolutions and qualities.</p>
-                    <div class="endpoint">/api/stream/{subject_id}</div>
-                    <a href="/api/stream/56988683026712168?detail_path=attack-on-titan-hindi-kGWQOIx0d4" target="_blank" class="btn">Get Player Link</a>
-                </div>
-
-                <div class="card">
-                    <div class="card-title"><i>📦</i> Catalog Filters</div>
-                    <p class="card-desc">Paginated collections for all genres. Movies, TV shows, and Animations filtered by professional criteria. Pagination Supported.</p>
-                    <div class="endpoint">/tv-series?page=2</div>
-                    <a href="/tv-series?page=2" target="_blank" class="btn">Test Page 2</a>
-                </div>
-
-                <div class="card">
-                    <div class="card-title"><i>💬</i> Subtitle Suite</div>
-                    <p class="card-desc">Access to the complete SRT/VTT global database for all streaming subjects.</p>
-                    <div class="endpoint">/api/stream/{id}/captions</div>
-                    <a href="/api/stream/6207982430134357800/captions?detail_path=breaking-bad-ej6Bp0MCAo7" target="_blank" class="btn">Retrive Subs</a>
-                </div>
             </div>
-
             <footer>
                 <div class="dev-tag">Developer: Walter</div>
             </footer>
@@ -472,11 +302,9 @@ async def get_movie_detail(slug: str):
 
 @app.get("/api/stream/{subject_id}")
 async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep: int = 1):
-    # Step 1: get the player domain
     dom_data = await _make_request(f"{API_BASE}/media-player/get-domain")
     domain = dom_data.get("data", "https://netfilm.world").rstrip("/")
 
-    # Step 2: build the Referer the way the real browser player does
     player_referer = (
         f"{domain}/spa/videoPlayPage/movies/{detail_path}"
         f"?id={subject_id}&type=/movie/detail&detailSe={se}&detailEp={ep}&lang=en"
@@ -553,4 +381,5 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("newapi:app", host="0.0.0.0", port=8000, reload=True)
+    # Local එකේ විතරක් run වෙන්න:
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
