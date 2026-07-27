@@ -13,12 +13,12 @@ import httpx
 app = FastAPI(
     title="MovieBox Direct API",
     description="Direct scraper & Heroku-Compatible Ultra Proxy Engine",
-    version="3.2.1"
+    version="3.2.2"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Production එකේදී මේක change කරන්න
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,7 +30,6 @@ H5_API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 _bearer_token: str | None = None
 _token_expiry: float = 0
 
-# 🆕 වැඩි දියුණු කළ Headers
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Origin": "https://h5.aoneroom.com",
@@ -49,7 +48,6 @@ DEFAULT_HEADERS = {
     "Connection": "keep-alive"
 }
 
-# 🆕 Video Download සඳහා වැඩි දියුණු කළ Headers
 PLAYER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "video/mp4,video/webm,video/*;q=0.9,*/*;q=0.8",
@@ -68,7 +66,6 @@ PLAYER_HEADERS = {
     "X-Requested-With": "XMLHttpRequest"
 }
 
-# 🆕 User-Agent list එක (rotate කරන්න)
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -96,7 +93,6 @@ def get_headers(referer: str = "https://h5.aoneroom.com/") -> dict:
 async def _get_bearer_token() -> str:
     global _bearer_token, _token_expiry
     
-    # Token එක valid නම් return කරන්න
     if _bearer_token and time.time() < _token_expiry:
         return _bearer_token
     
@@ -106,7 +102,7 @@ async def _get_bearer_token() -> str:
             x_user = resp.headers.get("x-user")
             if x_user:
                 _bearer_token = json.loads(x_user).get("token")
-                _token_expiry = time.time() + 3600  # පැය 1ක් valid
+                _token_expiry = time.time() + 3600
             if not _bearer_token:
                 cookie = resp.headers.get("set-cookie", "")
                 import re as _re
@@ -132,6 +128,21 @@ def format_size(size_bytes: int) -> str:
     except Exception:
         return "N/A"
 
+# 🆕 Encoding fix function
+def safe_json_decode(content):
+    """Try multiple encodings to decode JSON"""
+    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+    
+    if isinstance(content, bytes):
+        for encoding in encodings:
+            try:
+                return content.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        # All failed - return as string with replacement
+        return content.decode('utf-8', errors='replace')
+    return content
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return """
@@ -151,7 +162,7 @@ async def root():
         <body>
             <div class="container">
                 <h1>🎬 MovieBox Direct API</h1>
-                <p>Version 3.2.1 - Enhanced Proxy Engine</p>
+                <p>Version 3.2.2 - Fixed Encoding</p>
                 <div class="status">
                     <h3>📡 API Status: Online</h3>
                     <p>Go to <a href="/docs">/docs</a> to test endpoints</p>
@@ -181,7 +192,14 @@ async def search_content(q: str = Query(..., description="Search query")):
             if response.status_code != 200:
                 return {"success": False, "error": f"API status code {response.status_code}", "data": []}
             
-            data = response.json()
+            # 🆕 Fix encoding
+            try:
+                data = response.json()
+            except UnicodeDecodeError:
+                # Try to decode with different encoding
+                content = safe_json_decode(response.content)
+                data = json.loads(content)
+            
             items = data.get("data", {}).get("items", [])
             
             results = []
@@ -227,7 +245,6 @@ async def get_details(
     if not path:
         raise HTTPException(status_code=400, detail="Provide 'url' or 'detail_path'")
 
-    # Base Domain Detection
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("x-forwarded-host", request.url.netloc)
     base_domain = f"{scheme}://{host}".rstrip("/")
@@ -240,7 +257,14 @@ async def get_details(
             if r_detail.status_code != 200:
                 return {"success": False, "error": "Failed to fetch details"}
 
-            res_data = r_detail.json().get("data", {})
+            # 🆕 Fix encoding for detail response
+            try:
+                detail_json = r_detail.json()
+            except UnicodeDecodeError:
+                content = safe_json_decode(r_detail.content)
+                detail_json = json.loads(content)
+            
+            res_data = detail_json.get("data", {})
             subject = res_data.get("subject", {})
             if not subject:
                 return {"success": False, "error": "Metadata empty"}
@@ -259,7 +283,6 @@ async def get_details(
 
             download_url = f"{H5_API_BASE}/subject/download?subjectId={subject_id}&se={req_se}&ep={req_ep}&detailPath={path}"
             
-            # 🆕 Better headers for download request
             dl_headers = get_headers("https://videodownloader.site/")
             dl_headers["User-Agent"] = random.choice(USER_AGENTS)
             
@@ -267,7 +290,14 @@ async def get_details(
 
             downloads = []
             if r_play.status_code == 200:
-                play_data = r_play.json().get("data", {})
+                # 🆕 Fix encoding for download response
+                try:
+                    play_data = r_play.json()
+                except UnicodeDecodeError:
+                    content = safe_json_decode(r_play.content)
+                    play_data = json.loads(content)
+                
+                play_data = play_data.get("data", {})
                 streams = play_data.get("downloads", [])
                 captions = play_data.get("captions", [])
                 title_suffix = f" (S{req_se}E{req_ep})" if subject_type == 2 else ""
@@ -352,17 +382,15 @@ async def get_details(
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-# ⚡ HEROKU SAFE FAST STREAMING PROXY ENGINE - වැඩි දියුණු කළ version
+# ⚡ Fixed download proxy with better encoding handling
 @app.get("/api/download-proxy")
 async def download_proxy(request: Request, url: str = Query(...), filename: str = Query("video.mp4")):
-    """Enhanced proxy engine with retry logic and rate limit handling"""
+    """Enhanced proxy engine with encoding fixes"""
     
     target_url = urllib.parse.unquote(url)
     
-    # 🆕 Random User-Agent එකක් තෝරන්න
     user_agent = random.choice(USER_AGENTS)
     
-    # 🆕 Headers වැඩි දියුණු කරන්න
     proxy_headers = {
         "User-Agent": user_agent,
         "Referer": "https://themoviebox.xyz/",
@@ -382,34 +410,34 @@ async def download_proxy(request: Request, url: str = Query(...), filename: str 
     if range_header:
         proxy_headers["Range"] = range_header
 
-    # 🆕 Retry logic එක - 3 attempts
     max_retries = 3
-    retry_delays = [2, 4, 8]  # seconds
+    retry_delays = [2, 4, 8]
     
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(verify=False, follow_redirects=True, timeout=httpx.Timeout(20.0, read=120.0)) as client:
+            # 🆕 Use HTTP/1.1 to avoid encoding issues
+            async with httpx.AsyncClient(
+                verify=False, 
+                follow_redirects=True, 
+                timeout=httpx.Timeout(20.0, read=120.0),
+                http2=False  # Force HTTP/1.1
+            ) as client:
                 req = client.build_request("GET", target_url, headers=proxy_headers)
                 res = await client.send(req, stream=True)
                 
-                # 🆕 Rate limit එකට හසුවුනොත්
                 if res.status_code == 429:
                     await res.aclose()
                     if attempt < max_retries - 1:
                         delay = retry_delays[attempt]
                         await asyncio.sleep(delay)
-                        # 🆕 User-Agent වෙනස් කරලා try කරන්න
                         proxy_headers["User-Agent"] = random.choice(USER_AGENTS)
                         continue
                     else:
-                        # 🆕 Last attempt - Direct redirect කරන්න
                         return RedirectResponse(url=target_url, status_code=307)
                 
-                # 🆕 403 Forbidden ආවොත්
                 if res.status_code == 403:
                     await res.aclose()
                     if attempt < max_retries - 1:
-                        # Headers වෙනස් කරලා try කරන්න
                         proxy_headers["Referer"] = "https://www.google.com/"
                         proxy_headers["User-Agent"] = random.choice(USER_AGENTS)
                         await asyncio.sleep(retry_delays[attempt])
@@ -417,18 +445,21 @@ async def download_proxy(request: Request, url: str = Query(...), filename: str 
                     else:
                         return RedirectResponse(url=target_url, status_code=307)
                 
-                # 🆕 Success
                 if res.status_code in [200, 206]:
                     async def stream_chunks():
                         try:
                             async for chunk in res.aiter_bytes(chunk_size=65536):
                                 yield chunk
+                        except Exception as e:
+                            print(f"Stream error: {e}")
                         finally:
                             await res.aclose()
                     
-                    # 🆕 RFC 5987 Compliant Filename Header
+                    # 🆕 Better filename handling
                     safe_filename = urllib.parse.quote(filename)
-                    content_disposition = f"attachment; filename=\"{filename}\"; filename*=UTF-8''{safe_filename}"
+                    # Remove invalid characters
+                    clean_filename = filename.replace('"', '').replace("'", "").replace("\n", "")
+                    content_disposition = f"attachment; filename=\"{clean_filename}\"; filename*=UTF-8''{safe_filename}"
                     
                     response_headers = {
                         "Content-Disposition": content_disposition,
@@ -439,7 +470,6 @@ async def download_proxy(request: Request, url: str = Query(...), filename: str 
                         "Access-Control-Expose-Headers": "Content-Disposition, Content-Length, Content-Range"
                     }
                     
-                    # 🆕 Content-Length එක add කරන්න (download progress සඳහා)
                     for h in ["content-length", "content-range"]:
                         if h in res.headers:
                             response_headers[h] = res.headers[h]
@@ -450,7 +480,6 @@ async def download_proxy(request: Request, url: str = Query(...), filename: str 
                         headers=response_headers
                     )
                 else:
-                    # 🆕 අනෙකුත් status codes
                     await res.aclose()
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delays[attempt])
@@ -465,14 +494,13 @@ async def download_proxy(request: Request, url: str = Query(...), filename: str 
             else:
                 return RedirectResponse(url=target_url, status_code=307)
         except Exception as e:
+            print(f"Download proxy error (attempt {attempt}): {e}")
             if attempt == max_retries - 1:
                 return RedirectResponse(url=target_url, status_code=307)
             await asyncio.sleep(retry_delays[attempt])
     
-    # Fallback
     return RedirectResponse(url=target_url, status_code=307)
 
-# 🆕 Video Player Endpoint - Browser එකෙන්ම play කරන්න
 @app.get("/api/player")
 async def video_player(url: str = Query(...)):
     """Video player page with embedded video"""
@@ -498,23 +526,22 @@ async def video_player(url: str = Query(...)):
     </html>
     """)
 
-# 🆕 Health Check එක වැඩි දියුණු කළා
 @app.get("/api/health")
 async def health():
     return {
         "status": "ok", 
         "service": "MovieBox Official API", 
-        "version": "3.2.1",
+        "version": "3.2.2",
         "timestamp": datetime.now().isoformat(),
         "features": {
             "proxy_engine": "enhanced",
             "retry_logic": "enabled",
             "rate_limit_handling": "enabled",
-            "user_agent_rotation": "enabled"
+            "user_agent_rotation": "enabled",
+            "encoding_fix": "enabled"
         }
     }
 
-# 🆕 Error Handler
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     return JSONResponse(
@@ -526,7 +553,6 @@ async def http_exception_handler(request, exc):
         }
     )
 
-# 🆕 404 Handler
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
     return JSONResponse(
